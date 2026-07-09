@@ -1,0 +1,148 @@
+#!/bin/bash
+
+# Initialize variables and arrays
+INIT_TOPICS=()
+ADD_TOPICS=()
+REMOVE_TOPICS=()
+SHOW_TOPICS=false
+DEINIT_REPO=false
+OTHER_FLAGS_PASSED=false
+
+# Get the name of the current working directory
+REPO_NAME=$(basename "$PWD")
+REPO_PATH="otvnvs/$REPO_NAME"
+
+# Help menu function
+show_help() {
+  echo "Usage: $(basename "$0") [OPTIONS]"
+  echo ""
+  echo "Automates GitHub repository creation or manages topics on an existing one."
+  echo ""
+  echo "Options (New Projects):"
+  echo "  --topic <string>         Add a topic during initial repository creation."
+  echo "                           Can be used multiple times."
+  echo ""
+  echo "Options (Existing .git Projects):"
+  echo "  --topics                 Print current topics on the GitHub repository."
+  echo "  --topic-add <string>     Add a topic to the existing repository."
+  echo "                           Can be used multiple times."
+  echo "  --topic-remove <string>  Remove a topic from the existing repository."
+  echo "                           Can be used multiple times."
+  echo "  --deinit                 Delete the remote GitHub repository and local .git folder."
+  echo "                           Cannot be combined with any other flags."
+  echo ""
+  echo "General Options:"
+  echo "  -h, --help               Show this help message and exit."
+  exit 0
+}
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      show_help
+      ;;
+    --topic)
+      if [[ -n "$2" && "$2" != -* ]]; then INIT_TOPICS+=("$2"); shift 2; else echo "Error: --topic requires an argument."; exit 1; fi
+      OTHER_FLAGS_PASSED=true
+      ;;
+    --topics)
+      SHOW_TOPICS=true; shift
+      OTHER_FLAGS_PASSED=true
+      ;;
+    --topic-add)
+      if [[ -n "$2" && "$2" != -* ]]; then ADD_TOPICS+=("$2"); shift 2; else echo "Error: --topic-add requires an argument."; exit 1; fi
+      OTHER_FLAGS_PASSED=true
+      ;;
+    --topic-remove)
+      if [[ -n "$2" && "$2" != -* ]]; then REMOVE_TOPICS+=("$2"); shift 2; else echo "Error: --topic-remove requires an argument."; exit 1; fi
+      OTHER_FLAGS_PASSED=true
+      ;;
+    --deinit)
+      DEINIT_REPO=true; shift
+      ;;
+    *)
+      echo "Error: Unknown option '$1'. Use --help for usage details."
+      exit 1
+      ;;
+  esac
+done
+
+# Enforce mutual exclusivity for --deinit
+if [ "$DEINIT_REPO" = true ] && [ "$OTHER_FLAGS_PASSED" = true ]; then
+  echo "Error: --deinit cannot be combined with any other options."
+  exit 1
+fi
+
+# === MODE 1: EXISTING GIT PROJECT ===
+if [ -d ".git" ]; then
+  # Handle Repository Deletion (--deinit)
+  if [ "$DEINIT_REPO" = true ]; then
+    echo "⚠️  WARNING: You are about to permanently delete:"
+    echo "   - Remote GitHub repository: $REPO_PATH"
+    echo "   - Local tracking directory: ./.git"
+    read -p "Are you sure you want to proceed? (y/N): " confirm
+    
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+      echo "Deleting remote repository on GitHub..."
+      gh repo delete "$REPO_PATH" --yes
+      
+      echo "Removing local ./.git directory..."
+      rm -rf ./.git
+      
+      echo "Repository successfully de-initialized locally and remotely."
+    else
+      echo "Deletion cancelled."
+    fi
+    exit 0
+  fi
+
+  # Print existing topics if requested
+  if [ "$SHOW_TOPICS" = true ]; then
+    echo "Current topics for $REPO_PATH:"
+    gh repo view "$REPO_PATH" --json repositoryTopics --jq "(.repositoryTopics // [])[].name"
+  fi
+
+  # Add new topics
+  if [ ${#ADD_TOPICS[@]} -gt 0 ]; then
+    TOPICS_CSV=$(IFS=,; echo "${ADD_TOPICS[*]}")
+    echo "Adding topics: $TOPICS_CSV"
+    gh repo edit "$REPO_PATH" --add-topic "$TOPICS_CSV"
+  fi
+
+  # Remove topics
+  if [ ${#REMOVE_TOPICS[@]} -gt 0 ]; then
+    TOPICS_CSV=$(IFS=,; echo "${REMOVE_TOPICS[*]}")
+    echo "Removing topics: $TOPICS_CSV"
+    gh repo edit "$REPO_PATH" --remove-topic "$TOPICS_CSV"
+  fi
+
+  exit 0
+fi
+
+# === MODE 2: NEW GIT PROJECT ===
+if [ "$DEINIT_REPO" = true ]; then
+  echo "Error: Cannot run --deinit on a project that hasn't been initialized with Git yet."
+  exit 1
+fi
+
+echo "No Git repository found. Initialising brand new project..."
+
+# Initialize and commit your local files
+git init
+git add .
+git commit -m "initial commit" 2>/dev/null || echo "Nothing to commit, working tree clean."
+git branch -M main
+
+# Create the repo
+gh repo create "$REPO_PATH" --public --source=. --remote=origin
+
+# Apply topics ONLY if the user provided them
+if [ ${#INIT_TOPICS[@]} -gt 0 ]; then
+  TOPICS_CSV=$(IFS=,; echo "${INIT_TOPICS[*]}")
+  gh repo edit "$REPO_PATH" --add-topic "$TOPICS_CSV"
+fi
+
+# Push code online
+git push -u origin main
+
